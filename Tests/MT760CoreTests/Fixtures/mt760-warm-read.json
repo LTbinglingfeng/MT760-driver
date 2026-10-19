@@ -1,0 +1,9 @@
+{
+  "source": "official app targeted read, 2026-10-19",
+  "scope": "Observed HIDAPI warm-read boundary, not a USB bus capture or cold-start verification",
+  "request": [186,255,164,24,56,6,0,0],
+  "response": [1,4,4,1,16,0,20,0,80,0,32,0,48,0,64,0,80,0,6,0,2,0,2,3,16,0,20,0],
+  "levels": [800,1000,4000,1600,2400,3200,4000],
+  "activeCount": 7,
+  "currentGear": 3
+}

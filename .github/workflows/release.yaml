@@ -1,0 +1,115 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build macos-arm64
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - name: Check toolchain and native architecture
+        env:
+          EXPECTED_ARCH: arm64
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "$EXPECTED_ARCH"
+          xcrun swift --version
+          xcodebuild -version
+      # Offline tests only: never launch the app or the hardware-access helper.
+      - name: Run offline tests (Chinese)
+        env:
+          MT760_LANG: zh
+        run: ./scripts/test.sh
+      - name: Run offline tests (English)
+        env:
+          MT760_LANG: en
+        run: ./scripts/test.sh
+      - name: Package ad-hoc release
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: ./scripts/package-release.sh "$RELEASE_TAG"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64
+          path: dist/MT760Control_*.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    # Publish only once the arm64 build and all offline tests succeed.
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-arm64
+          path: dist
+      - name: Generate checksums and release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          assets=("MT760Control_${version}_macos_arm64.zip")
+          (cd dist && sha256sum "${assets[@]}" > checksums.txt)
+          cat > dist/release-notes.md <<'EOF'
+          ## 下载 / Downloads
+
+          - `*_macos_arm64.zip`: 仅支持 Apple Silicon（M 系列）/ Apple Silicon (M-series) only.
+          - macOS 13+；解压后将 `MT760 Control.app` 拖入“应用程序”。包含诊断工具和双语说明。
+          - macOS 13+; extract and drag `MT760 Control.app` to Applications. Includes the diagnostics CLI and bilingual README files.
+
+          **签名 / Signing:** ad-hoc 签名，未经 Apple 公证，首次打开可能被 Gatekeeper 拦截。确认来源后按 macOS 提示在“隐私与安全性”中允许打开；升级后可能需要重新授予输入监控权限。
+          Ad-hoc signed, not notarized by Apple. Gatekeeper may block the first launch; after verifying the source, follow macOS Privacy & Security prompts to allow opening. Input Monitoring permission may need to be granted again after updates.
+
+          使用 `shasum -a 256 -c checksums.txt` 验证下载 / Verify downloads with `shasum -a 256 -c checksums.txt`.
+          EOF
+          previous_tag="$(git describe --tags --match 'v*' --abbrev=0 "${RELEASE_TAG}^" 2>/dev/null || true)"
+          range="$RELEASE_TAG"
+          if [[ -n "$previous_tag" ]]; then
+            range="${previous_tag}..${RELEASE_TAG}"
+          fi
+          printf '\n## 更新记录 / Changelog\n\n' >> dist/release-notes.md
+          git log --reverse --pretty=format:'- %s (%h)' "$range" >> dist/release-notes.md
+          printf '\n\n' >> dist/release-notes.md
+          gh api "repos/${GH_REPO}/releases/generate-notes" \
+            -f tag_name="$RELEASE_TAG" --jq .body >> dist/release-notes.md
+      - name: Publish release with gh
+        shell: bash
+        run: |
+          set -euo pipefail
+          prerelease=false
+          if [[ "$RELEASE_TAG" == *-* ]]; then
+            prerelease=true
+          fi
+          # A failed initial upload leaves a draft; rerunning safely replaces assets.
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --verify-tag --draft \
+              --title "$RELEASE_TAG" --notes-file dist/release-notes.md \
+              --prerelease="$prerelease"
+          fi
+          gh release upload "$RELEASE_TAG" dist/MT760Control_*.zip dist/checksums.txt --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --title "$RELEASE_TAG" \
+            --notes-file dist/release-notes.md --prerelease="$prerelease"

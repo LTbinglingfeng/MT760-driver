@@ -1,0 +1,12 @@
+.build/
+dist/
+.DS_Store
+.swiftpm/
+__pycache__/
+*.pyc
+
+# Local-only research material (not published)
+官方程序源码/
+evidence/
+AGENTS.md
+docs/
